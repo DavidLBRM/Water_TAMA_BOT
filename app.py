@@ -230,7 +230,7 @@ with tab1:
                 st.write(response.text)
 
 # ------------------------------------------
-# כרטיסייה 2: יועץ AI סטטוטורי
+# כרטיסייה 2: יועץ AI
 # ------------------------------------------
 with tab2:
     p_name_display = st.session_state["plan_name"] if st.session_state["plan_name"] else "[הכנס_שם_תכנית_לפי_הנתונים]"
@@ -244,18 +244,36 @@ with tab2:
         f"שלום! אני יועץ בינה מלאכותית סטטוטורי של מינהל התכנון. אני מעודכן בתמ\"א 1 (תיקונים 7 ו-8), נספח ב'4 (הנחיות להכנת מסמך ניהול נגר וניקוז) ומסמכי המדיניות לניהול נגר עירוני. אני רואה שאתה עובד כעת על תכנית **{p_name_display}** ({p_area_display} דונם). במה אוכל לסייע לך בבדיקת התכנית?"
     )
     
+    # הצגת היסטוריית השיחה
     for msg in st.session_state["chat_history"]:
         st.chat_message(msg["role"]).markdown(msg["content"])
         
-    if user_chat := st.chat_input("הקלד את שאלתך כאן..."):
+    # קבלת קלט מהמשתמש
+    if user_chat := st.chat_input("הקלד את שאלתך כאן... (למשל: מה ההנחיות לרוחב רצועת ניהול נגר בנחל משני?)"):
+        # הצגת שאלת המשתמש על המסך ושמירתה
         st.chat_message("user").markdown(user_chat)
         st.session_state["chat_history"].append({"role": "user", "content": user_chat})
         
-        with st.spinner("מנתח מסמכים..."):
-            # העברת קבצי ה-PDF יחד עם שאלת המשתמש!
-            res = model.generate_content([*kb_files, user_chat])
-            st.chat_message("assistant").markdown(res.text)
-            st.session_state["chat_history"].append({"role": "assistant", "content": res.text})
+        with st.spinner("מחפש תשובה במסמכים הסטטוטוריים המצורפים..."):
+            # יצירת "עטיפת קרקוע" (Grounding Wrapper) סביב השאלה
+            grounded_prompt = f"""
+            אתה יועץ סטטוטורי. המשתמש שאל אותך שאלה.
+            עליך לענות על השאלה אך ורק בהתבסס על המידע המופיע בקובצי ה-PDF המצורפים אליך (תמ"א 1, נספחי ניקוז וכו').
+            
+            חוקי ברזל למתן התשובה:
+            1. אם התשובה נמצאת במסמכים, ענה עליה בצורה ברורה, מקצועית ומדויקת, וציין מאיזה מסמך או סעיף לקחת את המידע.
+            2. אם המידע לא נמצא במפורש במסמכים המצורפים, אסור לך להמציא או לשער. עליך לענות במדויק: "מבדיקת המסמכים הסטטוטוריים שהוזנו למערכת, לא נמצאה התייחסות ישירה לנושא זה."
+            
+            השאלה של המשתמש: {user_chat}
+            """
+            
+            # העברת קבצי ה-PDF יחד עם השאלה המעוטפת למודל
+            try:
+                res = model.generate_content([*kb_files, grounded_prompt])
+                st.chat_message("assistant").markdown(res.text)
+                st.session_state["chat_history"].append({"role": "assistant", "content": res.text})
+            except Exception as e:
+                st.error("אירעה שגיאה בעיבוד המסמכים. אנא נסה שוב.")
 
 # ------------------------------------------
 # כרטיסייה 3: אומדן יעדי נגר
