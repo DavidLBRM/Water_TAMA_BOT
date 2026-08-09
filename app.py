@@ -74,11 +74,12 @@ st.markdown("""
         border: 1px solid #DADCE0 !important;
         box-shadow: 0 1px 2px 0 rgba(60,64,67,0.1);
     }
+    .stChatMessage { direction: rtl; }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. אתחול מודל וטעינת קבצי PDF
+# 2. אתחול מודל וטעינת קבצי PDF ושכבות GIS
 # ==========================================
 if "plan_name" not in st.session_state:
     st.session_state["plan_name"] = ""
@@ -113,8 +114,41 @@ def load_pdf_knowledge_base():
                     uploaded_files.append(g_file)
     return uploaded_files
 
-# טעינת הקבצים בפועל
+# טעינת קבצי ה-PDF בפועל
 kb_files = load_pdf_knowledge_base()
+
+# פונקציה לטעינת מספר שכבות GIS (Shapefiles)
+@st.cache_data(show_spinner="טוען שכבות מידע גיאוגרפיות (רצועות תמ\"א 1)...")
+def load_shapefiles():
+    loaded_layers = {}
+    try:
+        import geopandas as gpd
+        
+        # מילון המקשר בין שם הקובץ באנגלית לשם שיוצג למשתמש במפה
+        layers_info = {
+            "afik_rashi": "אפיק נחל ראשי",
+            "afik_mishni": "אפיק נחל משני",
+            "nagar_rashi": "רצועת ניהול נגר (ראשי)",
+            "nagar_mishni": "רצועת ניהול נגר (משני)",
+            "hashpaa_rashi": "רצועת השפעה (ראשי)",
+            "hashpaa_mishni": "רצועת השפעה (משני)",
+            "hashpaa_darom_rahav": "השפעה נחל דרום רחב"
+        }
+        
+        for file_key, layer_name in layers_info.items():
+            shp_path = f"gis_data/{file_key}.shp"
+            if os.path.exists(shp_path):
+                # טעינת השכבה והמרת קואורדינטות לרשת העולמית לתצוגת אינטרנט
+                gdf = gpd.read_file(shp_path)
+                gdf = gdf.to_crs(epsg=4326)
+                loaded_layers[layer_name] = gdf
+                
+        return loaded_layers
+    except Exception as e:
+        return {}
+
+# טעינת שכבות ה-GIS בפועל
+gis_data_dict = load_shapefiles()
 
 master_prompt = """
 הגדרת תפקיד:
@@ -179,7 +213,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # כרטיסייה 1: תחקור וייעוץ תכנוני
 # ------------------------------------------
 with tab1:
-    col_input, col_output = st.columns([1.2, 1])
+    col_input, col_output = st.columns([1, 1.2])
     
     with col_input:
         st.subheader("שלב 1: איסוף נתוני התכנית לבדיקת עמידה בהנחיות תמ\"א 1")
@@ -210,27 +244,63 @@ with tab1:
             st.checkbox("תכנית לתשתית ארצית או אזורית")
             st.checkbox("שינוי או הוספת מוצא ניקוז לשטח פתוח")
             st.checkbox("כוללת אתר ויסות נגר (נספח ב' 15)")
-            
-        st.subheader("5. מפת מיקום התכנית והתניות אזוריות (תמ\"א 1)")
-        st.caption("בחירת מיקום על גבי המפה תעדכן אוטומטית את עובי הגשם (P50), סוג הקרקע, סמיכות לנחל ורגישות הידרולוגית.")
-        
-        # מפה בסיסית ממוקדת על ישראל
-        m = folium.Map(location=[31.7683, 35.2137], zoom_start=7)
-        folium.LatLngPopup().add_to(m)
-        st_data = st_folium(m, height=300, use_container_width=True)
 
     with col_output:
         st.subheader("שלב 2: סיכום ייעוץ והנחיות ניקוז (תמ\"א 1/8 + 1/7)")
-        st.info("כאן יופק דוח הייעוץ הסטטוטורי לאחר איסוף הנתונים.")
-        if st.button("הפק דוח ייעוץ", use_container_width=True):
+        
+        if st.button("הפק דוח ייעוץ", type="primary", use_container_width=True):
             with st.spinner("מנתח נתונים סטטוטוריים ומסמכי ידע..."):
                 prompt_data = f"אנא הפק דוח ייעוץ סטטוטורי עבור התכנית '{st.session_state['plan_name']}' בשטח של {st.session_state['plan_area']} דונם, בהתאם להנחיות המערכת ולמסמכים המצורפים."
-                # העברת קבצי ה-PDF יחד עם הבקשה למודל!
                 response = model.generate_content([*kb_files, prompt_data])
                 st.write(response.text)
+        
+        st.markdown("---")
+        st.subheader("🗺️ תצוגה מרחבית (שכבות תמ\"א 1 ופשטי הצפה)")
+        
+        # בניית מפה עם תצלום אוויר (לוויין)
+        m = folium.Map(location=[31.7683, 35.2137], zoom_start=7, tiles="CartoDB positron")
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri',
+            name='תצלום אוויר',
+            overlay=False,
+            control=True
+        ).add_to(m)
+        
+        # הוספת כל שכבות ה-Shapefile למפה (אם הועלו בהצלחה לתיקיית gis_data)
+        if gis_data_dict:
+            # פלטת צבעים שונה לכל סוג רצועה להבחנה ויזואלית קלה
+            colors = {
+                "אפיק נחל ראשי": "#00008B",          # כחול כהה
+                "אפיק נחל משני": "#1E90FF",          # כחול בהיר
+                "רצועת ניהול נגר (ראשי)": "#006400", # ירוק כהה
+                "רצועת ניהול נגר (משני)": "#32CD32", # ירוק בהיר
+                "רצועת השפעה (ראשי)": "#8B0000",     # אדום כהה
+                "רצועת השפעה (משני)": "#FF4500",     # כתום
+                "השפעה נחל דרום רחב": "#DAA520"      # צהוב חרדל
+            }
+            
+            for layer_name, gdf in gis_data_dict.items():
+                layer_color = colors.get(layer_name, "#3388ff") # צבע ברירת מחדל
+                
+                # ציור הפוליגונים/קווים על המפה
+                folium.GeoJson(
+                    gdf,
+                    name=layer_name,
+                    style_function=lambda x, c=layer_color: {
+                        'fillColor': c, 
+                        'color': c, 
+                        'weight': 2, 
+                        'fillOpacity': 0.4
+                    }
+                ).add_to(m)
+                
+        # הוספת פאנל שליטה המאפשר לבודק להדליק ולכבות שכבות ספציפיות
+        folium.LayerControl(collapsed=False).add_to(m)
+        st_data = st_folium(m, height=450, use_container_width=True)
 
 # ------------------------------------------
-# כרטיסייה 2: יועץ AI
+# כרטיסייה 2: יועץ AI סטטוטורי
 # ------------------------------------------
 with tab2:
     p_name_display = st.session_state["plan_name"] if st.session_state["plan_name"] else "[הכנס_שם_תכנית_לפי_הנתונים]"
@@ -244,18 +314,14 @@ with tab2:
         f"שלום! אני יועץ בינה מלאכותית סטטוטורי של מינהל התכנון. אני מעודכן בתמ\"א 1 (תיקונים 7 ו-8), נספח ב'4 (הנחיות להכנת מסמך ניהול נגר וניקוז) ומסמכי המדיניות לניהול נגר עירוני. אני רואה שאתה עובד כעת על תכנית **{p_name_display}** ({p_area_display} דונם). במה אוכל לסייע לך בבדיקת התכנית?"
     )
     
-    # הצגת היסטוריית השיחה
     for msg in st.session_state["chat_history"]:
         st.chat_message(msg["role"]).markdown(msg["content"])
         
-    # קבלת קלט מהמשתמש
     if user_chat := st.chat_input("הקלד את שאלתך כאן... (למשל: מה ההנחיות לרוחב רצועת ניהול נגר בנחל משני?)"):
-        # הצגת שאלת המשתמש על המסך ושמירתה
         st.chat_message("user").markdown(user_chat)
         st.session_state["chat_history"].append({"role": "user", "content": user_chat})
         
         with st.spinner("מחפש תשובה במסמכים הסטטוטוריים המצורפים..."):
-            # יצירת "עטיפת קרקוע" (Grounding Wrapper) סביב השאלה
             grounded_prompt = f"""
             אתה יועץ סטטוטורי. המשתמש שאל אותך שאלה.
             עליך לענות על השאלה אך ורק בהתבסס על המידע המופיע בקובצי ה-PDF המצורפים אליך (תמ"א 1, נספחי ניקוז וכו').
@@ -266,8 +332,6 @@ with tab2:
             
             השאלה של המשתמש: {user_chat}
             """
-            
-            # העברת קבצי ה-PDF יחד עם השאלה המעוטפת למודל
             try:
                 res = model.generate_content([*kb_files, grounded_prompt])
                 st.chat_message("assistant").markdown(res.text)
@@ -279,10 +343,8 @@ with tab2:
 # כרטיסייה 3: אומדן יעדי נגר
 # ------------------------------------------
 with tab3:
-    st.subheader("🧮 אומדן יעדי נגר ואיגום זמני")
-    st.caption("כלי חישוב להערכת נפח נגר לניהול, יעד איגום זמני ויעד ספיקה יוצאת מופחתת בהתאם להנחיות הרגולטוריות (תיקון 7/8).")
-    
-    st.info('**הגדרת המחשבון עפ"י תיקון 7 לתמ"א 1:**\n"כלי חישוב נפח הנגר לניהול בתכנית ובתכניות בשטח קטן מ 5 ד\' גם לחישוב יעד איגום זמני ויעד ספיקה יוצאת מופחתת. המחשבון מתבסס על נתוני קרקע וגשם והמפורסם באתר מינהל התכנון..."')
+    st.subheader("🧮 אומדן יעדי נגר ואיגום זמני (לפי מחשבון מינהל התכנון - תיקון 7/8)")
+    st.markdown("> *כלי חישוב נפח הנגר לניהול בתכנית ובתכניות בשטח קטן מ 5 ד' גם לחישוב יעד איגום זמני ויעד ספיקה יוצאת מופחתת. המחשבון מתבסס על נתוני קרקע וגשם והמפורסם באתר מינהל התכנון...*")
     
     col_calc_in, col_calc_out = st.columns([1, 1])
     
