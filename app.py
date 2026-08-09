@@ -11,75 +11,19 @@ import time
 st.set_page_config(page_title="מערכת עזר לבודקי תכניות - תמ\"א 1", layout="wide")
 
 st.markdown("""
-    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
     <style>
-    /* הגדרת רקע וגופנים בסגנון גוגל */
-    .stApp {
-        background-color: #F8F9FA;
-        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    }
-    
-    body, [class*="css"] { 
-        direction: rtl; 
-        text-align: right; 
-    }
-    
-    /* עיצוב כרטיסיות (Tabs) בסגנון Material */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 24px;
-        border-bottom: 1px solid #DADCE0;
-    }
-    .stTabs [data-baseweb="tab"] {
-        height: 50px;
-        white-space: pre-wrap;
-        background-color: transparent;
-        border-radius: 0px;
-        color: #5F6368;
-        font-weight: 500;
-        font-size: 16px;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #1A73E8 !important;
-        border-bottom: 3px solid #1A73E8 !important;
-    }
-    
-    /* עיצוב כפתורים (Geometric Balance + Google Blue) */
-    .stButton>button { 
-        border-radius: 4px !important; 
-        border: 1px solid #DADCE0; 
-        background-color: #FFFFFF; 
-        color: #1A73E8; 
-        font-weight: 600; 
-        transition: 0.2s box-shadow;
-    }
-    .stButton>button:hover { 
-        background-color: #F4F8LF; 
-        box-shadow: 0 1px 2px 0 rgba(60,64,67,0.3);
-    }
-    
-    /* עיצוב תיבות קלט וטקסט (Cards) */
-    .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stSelectbox>div>div>div { 
-        border-radius: 4px !important; 
-        border: 1px solid #DADCE0; 
-        background-color: #FFFFFF;
-    }
-    .stTextInput>div>div>input:focus {
-        border: 2px solid #1A73E8;
-    }
-    
-    /* עיצוב תיבות נגללות (Expanders) */
-    .stExpander {
-        background-color: #FFFFFF;
-        border-radius: 8px !important;
-        border: 1px solid #DADCE0 !important;
-        box-shadow: 0 1px 2px 0 rgba(60,64,67,0.1);
-    }
+    body, [class*="css"] { direction: rtl; text-align: right; font-family: 'Segoe UI', Tahoma, sans-serif; }
+    .stApp { background-color: #F8F9FA; }
+    .stButton>button { border-radius: 4px !important; border: 1px solid #005A9C; background-color: #FFFFFF; color: #005A9C; font-weight: bold; transition: 0.3s; }
+    .stButton>button:hover { background-color: #005A9C; color: white; }
+    .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stSelectbox>div>div>div { border-radius: 4px !important; border: 1px solid #DADCE0; background-color: #FFFFFF; }
+    .stExpander { background-color: #FFFFFF; border-radius: 4px !important; border: 1px solid #DADCE0 !important; }
     .stChatMessage { direction: rtl; }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. אתחול מודל וטעינת קבצי PDF ושכבות GIS
+# 2. אתחול מודל וטעינת נתונים (PDF + GIS)
 # ==========================================
 if "plan_name" not in st.session_state:
     st.session_state["plan_name"] = ""
@@ -88,13 +32,14 @@ if "plan_area" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = []
 
-try:
+# בלם חירום: בדיקה שמפתח ה-API קיים לפני שממשיכים
+if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-except:
-    st.warning("הערת מערכת: מפתח ה-API טרם הוגדר ב-Secrets. המערכת תפעל במצב תצוגה בלבד.")
+else:
+    st.error("שגיאה: מפתח ה-API חסר. אנא הגדר GEMINI_API_KEY בהגדרות ה-Secrets של Streamlit.")
+    st.stop()
 
-# פונקציה להעלאת ה-PDF לגוגל ושמירתם בזיכרון
-@st.cache_resource(show_spinner="טוען מסמכי תמ\"א 1 למאגר הידע (זה עשוי לקחת דקה)...")
+@st.cache_resource(show_spinner="טוען מסמכי תמ\"א 1 למאגר הידע...")
 def load_pdf_knowledge_base():
     uploaded_files = []
     kb_path = "knowledge_base"
@@ -102,19 +47,17 @@ def load_pdf_knowledge_base():
         for filename in os.listdir(kb_path):
             if filename.endswith(".pdf"):
                 file_path = os.path.join(kb_path, filename)
-                # העלאת הקובץ ל-Gemini API
-                g_file = genai.upload_file(path=file_path, display_name=filename)
-                
-                # המתנה לעיבוד הקובץ בשרתי גוגל
-                while g_file.state.name == "PROCESSING":
-                    time.sleep(2)
-                    g_file = genai.get_file(g_file.name)
-                    
-                if g_file.state.name == "ACTIVE":
-                    uploaded_files.append(g_file)
+                try:
+                    g_file = genai.upload_file(path=file_path, display_name=filename)
+                    while g_file.state.name == "PROCESSING":
+                        time.sleep(2)
+                        g_file = genai.get_file(g_file.name)
+                    if g_file.state.name == "ACTIVE":
+                        uploaded_files.append(g_file)
+                except Exception as e:
+                    st.error(f"שגיאה בהעלאת הקובץ {filename}: {e}")
     return uploaded_files
 
-# טעינת קבצי ה-PDF בפועל
 kb_files = load_pdf_knowledge_base()
 
 # פונקציה לטעינת מספר שכבות GIS (Shapefiles)
