@@ -11,12 +11,69 @@ import time
 st.set_page_config(page_title="מערכת עזר לבודקי תכניות - תמ\"א 1", layout="wide")
 
 st.markdown("""
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
     <style>
-    body, [class*="css"] { direction: rtl; text-align: right; font-family: 'Segoe UI', Tahoma, sans-serif; }
-    .stButton>button { border-radius: 0px !important; border: 2px solid #005A9C; background-color: #F0F2F6; color: #005A9C; font-weight: bold; }
-    .stButton>button:hover { background-color: #005A9C; color: white; }
-    .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stSelectbox>div>div>div { border-radius: 0px !important; border: 1px solid #CCCCCC; direction: rtl; }
-    .stChatMessage { direction: rtl; }
+    /* הגדרת רקע וגופנים בסגנון גוגל */
+    .stApp {
+        background-color: #F8F9FA;
+        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    
+    body, [class*="css"] { 
+        direction: rtl; 
+        text-align: right; 
+    }
+    
+    /* עיצוב כרטיסיות (Tabs) בסגנון Material */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+        border-bottom: 1px solid #DADCE0;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: transparent;
+        border-radius: 0px;
+        color: #5F6368;
+        font-weight: 500;
+        font-size: 16px;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #1A73E8 !important;
+        border-bottom: 3px solid #1A73E8 !important;
+    }
+    
+    /* עיצוב כפתורים (Geometric Balance + Google Blue) */
+    .stButton>button { 
+        border-radius: 4px !important; 
+        border: 1px solid #DADCE0; 
+        background-color: #FFFFFF; 
+        color: #1A73E8; 
+        font-weight: 600; 
+        transition: 0.2s box-shadow;
+    }
+    .stButton>button:hover { 
+        background-color: #F4F8LF; 
+        box-shadow: 0 1px 2px 0 rgba(60,64,67,0.3);
+    }
+    
+    /* עיצוב תיבות קלט וטקסט (Cards) */
+    .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stSelectbox>div>div>div { 
+        border-radius: 4px !important; 
+        border: 1px solid #DADCE0; 
+        background-color: #FFFFFF;
+    }
+    .stTextInput>div>div>input:focus {
+        border: 2px solid #1A73E8;
+    }
+    
+    /* עיצוב תיבות נגללות (Expanders) */
+    .stExpander {
+        background-color: #FFFFFF;
+        border-radius: 8px !important;
+        border: 1px solid #DADCE0 !important;
+        box-shadow: 0 1px 2px 0 rgba(60,64,67,0.1);
+    }
     </style>
     """, unsafe_allow_html=True)
 
