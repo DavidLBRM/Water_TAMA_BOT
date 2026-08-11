@@ -1,9 +1,11 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import folium
 from streamlit_folium import st_folium
 import os
 import time
+import tempfile
 
 # ==========================================
 # 1. הגדרות תצורה ועיצוב
@@ -11,6 +13,7 @@ import time
 st.set_page_config(page_title="מערכת עזר לבודקי תכניות - תמ\"א 1", layout="wide")
 
 st.markdown("""
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
     <style>
     body, [class*="css"] { direction: rtl; text-align: right; font-family: 'Segoe UI', Tahoma, sans-serif; }
     .stApp { background-color: #F8F9FA; }
@@ -32,9 +35,9 @@ if "plan_area" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = []
 
-# בלם חירום: בדיקה שמפתח ה-API קיים לפני שממשיכים
+# חיבור למודל בעזרת ה-SDK החדש (תומך במפתחות AQ)
 if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 else:
     st.error("שגיאה: מפתח ה-API חסר. אנא הגדר GEMINI_API_KEY בהגדרות ה-Secrets של Streamlit.")
     st.stop()
@@ -48,11 +51,17 @@ def load_pdf_knowledge_base():
             if filename.endswith(".pdf"):
                 file_path = os.path.join(kb_path, filename)
                 try:
-                    g_file = genai.upload_file(path=file_path, display_name=filename)
-                    while g_file.state.name == "PROCESSING":
+                    # העלאת קבצים בספרייה החדשה
+                    g_file = client.files.upload(file=file_path)
+                    
+                    def get_state(f):
+                        return getattr(f.state, "name", str(f.state))
+                        
+                    while get_state(g_file) == "PROCESSING":
                         time.sleep(2)
-                        g_file = genai.get_file(g_file.name)
-                    if g_file.state.name == "ACTIVE":
+                        g_file = client.files.get(name=g_file.name)
+                        
+                    if get_state(g_file) == "ACTIVE":
                         uploaded_files.append(g_file)
                 except Exception as e:
                     st.error(f"שגיאה בהעלאת הקובץ {filename}: {e}")
@@ -66,8 +75,6 @@ def load_shapefiles():
     loaded_layers = {}
     try:
         import geopandas as gpd
-        
-        # מילון המקשר בין שם הקובץ באנגלית לשם שיוצג למשתמש במפה
         layers_info = {
             "afik_rashi": "אפיק נחל ראשי",
             "afik_mishni": "אפיק נחל משני",
@@ -77,20 +84,16 @@ def load_shapefiles():
             "hashpaa_mishni": "רצועת השפעה (משני)",
             "hashpaa_darom_rahav": "השפעה נחל דרום רחב"
         }
-        
         for file_key, layer_name in layers_info.items():
             shp_path = f"gis_data/{file_key}.shp"
             if os.path.exists(shp_path):
-                # טעינת השכבה והמרת קואורדינטות לרשת העולמית לתצוגת אינטרנט
                 gdf = gpd.read_file(shp_path)
                 gdf = gdf.to_crs(epsg=4326)
                 loaded_layers[layer_name] = gdf
-                
         return loaded_layers
     except Exception as e:
         return {}
 
-# טעינת שכבות ה-GIS בפועל
 gis_data_dict = load_shapefiles()
 
 master_prompt = """
@@ -106,6 +109,7 @@ master_prompt = """
 * נתוני קרקע (סוג הקרקע).
 * האם ידוע על סמיכות לנחל או הימצאות באזור החשוד בזיהום מי תהום/רגישות הידרולוגית גבוהה.
 * האם התכנית היא כוללנית/מתאר יישובית, תשתית ארצית/אזורית, או משנה/מוסיפה מוצא ניקוז לשטח פתוח.
+* אם המשתמש העלה מסמך של התכנית (תקנון/הוראות), קרא אותו בקפידה ושלב את הממצאים הרלוונטיים בייעוץ.
 
 שלב 2: סיכום ייעוץ והנחיות ניקוז (על בסיס תמ"א 1/8 + 1/7)
 לאחר קבלת כל הנתונים, הצג את הייעוץ בחלוקה לסעיפים הבאים:
@@ -128,16 +132,11 @@ master_prompt = """
 * לתעסוקה ומסחר / מוסדות ציבור: המלץ על אגירת מים בתת-הקרקע או ניצול רחבות הריצוף הגדולות להשהיה.
 
 הוראות מסגרת חובה (Knowledge Base & Style):
-1. התבסס אך ורק על מסמכי ה-PDF המצורפים אליך (תמ"א 1, נספח ב'4, מסמכי מדיניות). אין להמציא סעיפי חוק או תקנות.
+1. התבסס אך ורק על מסמכי ה-PDF המצורפים אליך (תמ"א 1, נספח ב'4, מסמכי מדיניות, וקובץ התכנית במידה והועלה). אין להמציא סעיפי חוק או תקנות.
 2. ודא כי התשובה כתובה בעברית תקינה.
 3. סגנון: שפה מקצועית, אובייקטיבית וסמכותית. ללא פסקאות הקדמה מאריכות.
 4. סיים את הייעוץ בפסקת סיכום ברורה המציגה את השורה התחתונה על סמך התחקור והנתונים.
 """
-
-model = genai.GenerativeModel(
-    model_name='gemini-1.5-pro',
-    system_instruction=master_prompt
-)
 
 st.title("💧 מערכת תומכת החלטות - ניהול נגר (תיקונים 7 ו-8 לתמ\"א 1)")
 st.markdown("---")
@@ -187,52 +186,79 @@ with tab1:
             st.checkbox("תכנית לתשתית ארצית או אזורית")
             st.checkbox("שינוי או הוספת מוצא ניקוז לשטח פתוח")
             st.checkbox("כוללת אתר ויסות נגר (נספח ב' 15)")
+            
+        with st.expander("5. העלאת מסמכי התכנית (אופציונלי)", expanded=True):
+            uploaded_plan_file = st.file_uploader("העלה תקנון או הוראות תכנית (PDF, DOCX, TXT):", type=['pdf', 'docx', 'txt'])
 
     with col_output:
         st.subheader("שלב 2: סיכום ייעוץ והנחיות ניקוז (תמ\"א 1/8 + 1/7)")
         
         if st.button("הפק דוח ייעוץ", type="primary", use_container_width=True):
             with st.spinner("מנתח נתונים סטטוטוריים ומסמכי ידע..."):
+                
+                # טיפול בקובץ שהועלה על ידי המשתמש
+                user_file_parts = []
+                if uploaded_plan_file is not None:
+                    # יצירת קובץ זמני בשרת כדי ש-Gemini יוכל לקרוא אותו
+                    with tempfile.NamedTemporaryFile(delete=False, suffix="." + uploaded_plan_file.name.split('.')[-1]) as tmp_file:
+                        tmp_file.write(uploaded_plan_file.getvalue())
+                        tmp_file_path = tmp_file.name
+                    
+                    try:
+                        uploaded_g_file = client.files.upload(file=tmp_file_path)
+                        def get_state(f): return getattr(f.state, "name", str(f.state))
+                        
+                        while get_state(uploaded_g_file) == "PROCESSING":
+                            time.sleep(2)
+                            uploaded_g_file = client.files.get(name=uploaded_g_file.name)
+                        
+                        if get_state(uploaded_g_file) == "ACTIVE":
+                            user_file_parts.append(uploaded_g_file)
+                    except Exception as e:
+                        st.warning(f"שגיאה בעיבוד הקובץ שהועלה: {e}")
+
                 prompt_data = f"אנא הפק דוח ייעוץ סטטוטורי עבור התכנית '{st.session_state['plan_name']}' בשטח של {st.session_state['plan_area']} דונם, בהתאם להנחיות המערכת ולמסמכים המצורפים."
-                response = model.generate_content([*kb_files, prompt_data])
-                st.write(response.text)
+                if user_file_parts:
+                    prompt_data += "\nמצורף קובץ הוראות התכנית שהועלה על ידי המשתמש. אנא קרא אותו, שלב את הנתונים העולים ממנו בייעוץ, וציין התייחסויות רלוונטיות מתוכו לגבי ניהול נגר."
+
+                try:
+                    response = client.models.generate_content(
+                        model='gemini-1.5-pro',
+                        contents=[*kb_files, *user_file_parts, prompt_data],
+                        config=types.GenerateContentConfig(
+                            system_instruction=master_prompt
+                        )
+                    )
+                    st.write(response.text)
+                except Exception as e:
+                    st.error(f"שגיאה בהפקת הדוח: {e}")
         
         st.markdown("---")
         st.subheader("🗺️ תצוגה מרחבית (שכבות תמ\"א 1 ופשטי הצפה)")
         
-        # בניית מפה עם תצלום אוויר (לוויין)
         m = folium.Map(location=[31.7683, 35.2137], zoom_start=7, tiles="CartoDB positron")
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Esri',
-            name='תצלום אוויר',
-            overlay=False,
-            control=True
+            attr='Esri', name='תצלום אוויר', overlay=False, control=True
         ).add_to(m)
         
-        # הוספת כל שכבות ה-Shapefile למפה (אם הועלו בהצלחה לתיקיית gis_data)
         if gis_data_dict:
-            # פלטת צבעים שונה לכל סוג רצועה להבחנה ויזואלית קלה
             colors = {
-                "אפיק נחל ראשי": "#00008B",          # כחול כהה
-                "אפיק נחל משני": "#1E90FF",          # כחול בהיר
-                "רצועת ניהול נגר (ראשי)": "#006400", # ירוק כהה
-                "רצועת ניהול נגר (משני)": "#32CD32", # ירוק בהיר
-                "רצועת השפעה (ראשי)": "#8B0000",     # אדום כהה
-                "רצועת השפעה (משני)": "#FF4500",     # כתום
-                "השפעה נחל דרום רחב": "#DAA520"      # צהוב חרדל
+                "אפיק נחל ראשי": "#00008B", "אפיק נחל משני": "#1E90FF",
+                "רצועת ניהול נגר (ראשי)": "#006400", "רצועת ניהול נגר (משני)": "#32CD32",
+                "רצועת השפעה (ראשי)": "#8B0000", "רצועת השפעה (משני)": "#FF4500",
+                "השפעה נחל דרום רחב": "#DAA520"
             }
             
             for layer_name, gdf in gis_data_dict.items():
-                layer_color = colors.get(layer_name, "#3388ff") # צבע ברירת מחדל
+                layer_color = colors.get(layer_name, "#3388ff")
                 
-                # עותק נקי: ממירים את כל העמודות לטקסט (String) כדי למנוע קריסת JSON
+                # המרת עמודות טבלה לטקסט למניעת קריסת JSON (שגיאת GeoPandas)
                 display_data = gdf.copy()
                 for col in display_data.columns:
                     if col != 'geometry':
                         display_data[col] = display_data[col].astype(str)
                 
-                # מנגנון סינון דינמי לפי שם תכנית
                 if st.session_state["plan_name"]:
                     try:
                         filtered_data = display_data[display_data.iloc[:, 0].str.contains(st.session_state["plan_name"], na=False)]
@@ -241,19 +267,11 @@ with tab1:
                     except:
                         pass
                 
-                # ציור הפוליגונים/קווים על המפה
                 folium.GeoJson(
-                    display_data,
-                    name=layer_name,
-                    style_function=lambda x, c=layer_color: {
-                        'fillColor': c, 
-                        'color': c, 
-                        'weight': 2, 
-                        'fillOpacity': 0.4
-                    }
+                    display_data, name=layer_name,
+                    style_function=lambda x, c=layer_color: {'fillColor': c, 'color': c, 'weight': 2, 'fillOpacity': 0.4}
                 ).add_to(m)
                 
-        # הוספת פאנל שליטה המאפשר לבודק להדליק ולכבות שכבות ספציפיות
         folium.LayerControl(collapsed=False).add_to(m)
         st_data = st_folium(m, height=450, use_container_width=True)
 
@@ -267,7 +285,6 @@ with tab2:
     st.subheader("💬 יועץ AI לניהול נגר ובינוי")
     st.write("מענה לשאלות בודקים, פרשנות תמ\"א 1, מודלים הידרולוגיים והנחיות ניקוז (מבוסס על מסמכי המקור).")
     
-    # הודעת פתיחה
     st.chat_message("assistant").markdown(
         f"שלום! אני יועץ בינה מלאכותית סטטוטורי של מינהל התכנון. אני מעודכן בתמ\"א 1 (תיקונים 7 ו-8), נספח ב'4 (הנחיות להכנת מסמך ניהול נגר וניקוז) ומסמכי המדיניות לניהול נגר עירוני. אני רואה שאתה עובד כעת על תכנית **{p_name_display}** ({p_area_display} דונם). במה אוכל לסייע לך בבדיקת התכנית?"
     )
@@ -275,34 +292,35 @@ with tab2:
     for msg in st.session_state["chat_history"]:
         st.chat_message(msg["role"]).markdown(msg["content"])
         
-    if user_chat := st.chat_input("הקלד את שאלתך כאן... (למשל: מה ההנחיות לרוחב רצועת ניהול נגר בנחל משני?)"):
+    if user_chat := st.chat_input("הקלד את שאלתך כאן..."):
         st.chat_message("user").markdown(user_chat)
         st.session_state["chat_history"].append({"role": "user", "content": user_chat})
         
         with st.spinner("מחפש תשובה במסמכים הסטטוטוריים המצורפים..."):
             grounded_prompt = f"""
-            אתה יועץ סטטוטורי. המשתמש שאל אותך שאלה.
-            עליך לענות על השאלה אך ורק בהתבסס על המידע המופיע בקובצי ה-PDF המצורפים אליך (תמ"א 1, נספחי ניקוז וכו').
-            
-            חוקי ברזל למתן התשובה:
-            1. אם התשובה נמצאת במסמכים, ענה עליה בצורה ברורה, מקצועית ומדויקת, וציין מאיזה מסמך או סעיף לקחת את המידע.
-            2. אם המידע לא נמצא במפורש במסמכים המצורפים, אסור לך להמציא או לשער. עליך לענות במדויק: "מבדיקת המסמכים הסטטוטוריים שהוזנו למערכת, לא נמצאה התייחסות ישירה לנושא זה."
-            
-            השאלה של המשתמש: {user_chat}
+            אתה יועץ סטטוטורי. המשתמש שאל אותך שאלה. עליך לענות אך ורק בהתבסס על המידע המופיע בקובצי ה-PDF המצורפים. 
+            אם התשובה נמצאת - ציין מאיזה מסמך או סעיף נלקח המידע. אם המידע לא נמצא במפורש - אל תמציא, וענה במדויק: "מבדיקת המסמכים לא נמצאה התייחסות ישירה לנושא זה."
+            השאלה: {user_chat}
             """
             try:
-                res = model.generate_content([*kb_files, grounded_prompt])
+                res = client.models.generate_content(
+                    model='gemini-1.5-pro',
+                    contents=[*kb_files, grounded_prompt],
+                    config=types.GenerateContentConfig(
+                        system_instruction=master_prompt
+                    )
+                )
                 st.chat_message("assistant").markdown(res.text)
                 st.session_state["chat_history"].append({"role": "assistant", "content": res.text})
             except Exception as e:
-                st.error("אירעה שגיאה בעיבוד המסמכים. אנא נסה שוב.")
+                st.error("אירעה שגיאה בעיבוד התשובה. אנא נסה שוב.")
 
 # ------------------------------------------
 # כרטיסייה 3: אומדן יעדי נגר
 # ------------------------------------------
 with tab3:
     st.subheader("🧮 אומדן יעדי נגר ואיגום זמני (לפי מחשבון מינהל התכנון - תיקון 7/8)")
-    st.markdown("> *כלי חישוב נפח הנגר לניהול בתכנית ובתכניות בשטח קטן מ 5 ד' גם לחישוב יעד איגום זמני ויעד ספיקה יוצאת מופחתת. המחשבון מתבסס על נתוני קרקע וגשם והמפורסם באתר מינהל התכנון...*")
+    st.markdown("> *כלי חישוב נפח הנגר לניהול בתכנית ובתכניות בשטח קטן מ 5 ד' גם לחישוב יעד איגום זמני ויעד ספיקה יוצאת מופחתת...*")
     
     col_calc_in, col_calc_out = st.columns([1, 1])
     
@@ -320,8 +338,8 @@ with tab3:
         if calc_area >= 5.0:
             st.success("**תכנית ≥ 5 דונם (חובת 75%)**")
             st.metric(label="נפח הנגר לניהול:", value="344 מ\"ק")
-            st.markdown("סך הנגר היממתי הנוצר באירוע גשם 1:50 שנה: **459 מ\"ק** (מקדם משוקלל C = 0.64)")
-            st.warning("**הנחיה סטטוטורית ליעדי קצה בתכניות מעל 5 דונם:**\n\nהיות ששטח התכנית עולה על 5 דונם, חישוב יעד האיגום הזמני ויעד הספיקה היוצאת המופחתת לא מוצג כאן; יעדים אלו יחושבו באופן פרטני לכל תת-אגן במסגרת נספח הניקוז (נספח ב'4) על ידי יועץ הניקוז/ההידרולוג.")
+            st.markdown("סך הנגר היממתי הנוצר באירוע גשם 1:50 שנה: **459 מ\"ק**")
+            st.warning("**הנחיה סטטוטורית ליעדי קצה בתכניות מעל 5 דונם:**\n\nהיות ששטח התכנית עולה על 5 דונם, חישוב יעד האיגום הזמני ויעד הספיקה היוצאת המופחתת לא מוצג כאן; יעדים אלו יחושבו באופן פרטני לכל תת-אגן במסגרת נספח הניקוז על ידי יועץ הניקוז.")
         else:
             st.info("**תכנית קטנה מ-5 דונם (חובת 50%)**")
             st.metric(label="נפח הנגר לניהול:", value="150 מ\"ק")
@@ -333,8 +351,6 @@ with tab3:
 # ------------------------------------------
 with tab4:
     st.subheader("📚 ספריית הוראות סטטוטוריות ותקנים - תמ\"א 1 (תיקונים 7 ו-8)")
-    st.write("ריכוז קריטריונים תכנוניים להגנה מפני הצפות, הגדרות מפתח והנחיות ניהול נגר לבודקי תכניות.")
-    
     st.markdown("#### טבלה מס' 1: קריטריונים תכנוניים להגנה מפני הצפות לפי שימושי קרקע")
     st.markdown("""
     | ייעוד / שימוש השטח | תקופת חזרה מינימלית לתכנון |
@@ -345,12 +361,9 @@ with tab4:
     | מגורים, מסחר, תעסוקה ומבני ציבור (מפלס 0.00) | 1:100 |
     | בנייה בתת-הקרקע וחניונים | 1:100 |
     """)
-    
     st.markdown("#### מונחים והגדרות מפתח בתמ\"א 1 (פרק המים)")
     st.markdown("""
-    * **נפח נגר לניהול:** אחוז מנפח הנגר הנוצר בתכנית שעל פיו מחושבים יעד האיגום ויעד הספיקה (סעיף 7.1.2).
+    * **נפח נגר לניהול:** אחוז מנפח הנגר הנוצר בתכנית שעל פיו מחושבים יעד האיגום ויעד הספיקה.
     * **יעד איגום זמני:** נפח הנגר הנדרש להשהייה בתחום התכנית לשם עמידה בספיקה המופחתת.
-    * **יעד ספיקה יוצאת מופחתת:** הספיקה המרבית המותרת לשחרור ממערכות ניהול הנגר של התכנית.
-    * **אתר ויסות נגר:** שטח המיועד להשהיית נגר לפרק זמן קצר כדי להקטין ספיקת מורד ולצמצם שיטפונות (נספח ב'15).
-    * **חלחול / החדרה:** מעבר מים ישיר לתווך הבלתי רווי או הרווי, בעל חשיבות עליונה באזורי עדיפות להעשרת מי תהום.
+    * **אתר ויסות נגר:** שטח המיועד להשהיית נגר לפרק זמן קצר כדי להקטין ספיקת מורד.
     """)
