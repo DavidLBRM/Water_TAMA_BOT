@@ -226,9 +226,24 @@ with tab1:
             for layer_name, gdf in gis_data_dict.items():
                 layer_color = colors.get(layer_name, "#3388ff") # צבע ברירת מחדל
                 
+                # עותק נקי: ממירים את כל העמודות לטקסט (String) כדי למנוע קריסת JSON
+                display_data = gdf.copy()
+                for col in display_data.columns:
+                    if col != 'geometry':
+                        display_data[col] = display_data[col].astype(str)
+                
+                # מנגנון סינון דינמי לפי שם תכנית
+                if st.session_state["plan_name"]:
+                    try:
+                        filtered_data = display_data[display_data.iloc[:, 0].str.contains(st.session_state["plan_name"], na=False)]
+                        if not filtered_data.empty:
+                            display_data = filtered_data
+                    except:
+                        pass
+                
                 # ציור הפוליגונים/קווים על המפה
                 folium.GeoJson(
-                    gdf,
+                    display_data,
                     name=layer_name,
                     style_function=lambda x, c=layer_color: {
                         'fillColor': c, 
